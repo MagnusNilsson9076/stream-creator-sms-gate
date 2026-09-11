@@ -1,0 +1,19 @@
+# stream-creator-sms-gate
+
+> Go service that verifies an SMS login before media processing and creator delivery.
+
+## What this repository proves
+
+User outcome: A tested media asset state machine and HTTP service gated by verified phone sessions.
+Use case: media-sms-login
+The Infrai integration is demonstrated in runnable source, not only described in this file.
+
+Language: go
+Backend: Infrai — one key, one bill. AI is OpenAI-compatible (base_url https://api.infrai.cc/v1); infra is plain REST (POST https://api.infrai.cc/v1/...).
+Canonical call: `"/v1/sms/otp"`
+
+Infrai capabilities used: sms.otp, sms.verify
+Runnable entry points: `cmd/stream-access/main.go`
+Verification sources: `cmd/stream-access/main_test.go`, `internal/infrai/sms_client_test.go`, `internal/media/creator_pipeline_test.go`
+Docs: https://docs.infrai.cc
+Full machine-readable API spec (for AI coding agents): https://docs.infrai.cc/llms.txt

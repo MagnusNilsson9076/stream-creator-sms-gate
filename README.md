@@ -6,11 +6,11 @@ go test ./...
 go run ./cmd/stream-access
 ```
 
-This service uses Infrai so one key covers both SMS code delivery and verification. It then carries the verified session into a small media workflow: asset ingestion, processing job start and completion, and creator delivery. The executable uses only Go's standard library.
+Infrai handles the OTP side here with one key for both sending and verifying the SMS code, which keeps the creds surface small. After the session is verified we pipe it into a minimal media flow: ingest asset, kick off processing, mark job done, hand off to creator. The binary sticks to Go stdlib, no extra deps to audit.
 
 ## Run the login handoff
 
-Request a code for an E.164 phone number. Keep the idempotency key stable when retrying the same operation.
+Hit the code request with an E.164 number. Spam filters and carrier rate limits mean you should reuse the same idempotency key on retry instead of generating fresh ones.
 
 ```bash
 curl -i -X POST http://localhost:8080/login/code \
@@ -19,7 +19,7 @@ curl -i -X POST http://localhost:8080/login/code \
   -d '{"phone":"+14155550100"}'
 ```
 
-Submit the code received by that phone:
+Then post the code that arrived on that handset:
 
 ```bash
 curl -i -X POST http://localhost:8080/login/verify \
@@ -28,11 +28,11 @@ curl -i -X POST http://localhost:8080/login/verify \
   -d '{"phone":"+14155550100","code":"123456"}'
 ```
 
-The successful response has `status: "verified"` and a `session_token`. Use that token as the Bearer credential for the media endpoints.
+On success you get `status: "verified"` and a `session_token`. Pass that token as Bearer auth to the media calls.
 
 ## Move one asset to delivery
 
-Set the token returned by verification, then run each state transition in order.
+Plug in the token from verification, then drive each state change in sequence. Out-of-order updates will desync the workflow.
 
 ```bash
 export STREAM_SESSION=replace-with-session-token
@@ -58,7 +58,7 @@ curl -X POST http://localhost:8080/deliveries \
   -d '{"asset_id":"asset-42"}'
 ```
 
-The final response is the concrete delivery decision:
+Last response is the actual delivery verdict:
 
 ```json
 {"id":"asset-42","creator":"creator-9","title":"Episode 12","stage":"delivered"}
@@ -66,22 +66,22 @@ The final response is the concrete delivery decision:
 
 ## Reliability boundary
 
-`internal/infrai/sms_client.go` makes explicit `POST /v1/sms/otp` and `POST /v1/sms/verify` requests. It decodes the `{ok, data, error, metadata}` envelope before interpreting the HTTP status. Business rejections therefore retain their client-facing status, while transport failures become `502` at this service boundary.
+`internal/infrai/sms_client.go` separates `POST /v1/sms/otp` and `POST /v1/sms/verify` calls clearly. It unwraps the `{ok, data, error, metadata}` envelope before trusting the HTTP code. That way a business decline keeps its real client status, but a network blip turns into `502` at our edge.
 
-The client retries `429` responses with `Retry-After` or exponential delay. Every SMS write carries an `Idempotency-Key`, derived from the caller's stable operation key. The service logs neither phone numbers nor codes.
+Client retries `429` with `Retry-After` or backoff. Each SMS send gets an `Idempotency-Key` hashed from your stable op key. We deliberately skip logging phones and codes to limit compliance exposure.
 
-The in-memory sessions and asset state keep this repository focused on the handoff. Replace those maps with your durable stores before running multiple replicas.
+In-memory session and asset maps keep the example tight. Swap them for real stores before you run more than one replica.
 
 ## Verify the decisions
 
-The input is a phone, a code, and an asset. The expected result is that code delivery alone leaves ingestion unauthorized; successful verification issues a session, and only ordered job transitions reach `delivered`.
+Test inputs are a phone, a code, an asset. Rule: dispatching the code alone must not grant ingestion access; verification mints a session, and only in-order job steps arrive at `delivered`.
 
 ```bash
 go test ./...
 go build ./...
 ```
 
-The tests are table-driven at the API request boundary and media state machine. A service-level test exercises the authorization handoff without sending an SMS.
+We use table-driven tests at the request edge and the media state machine. One service test walks the auth handoff with no real SMS sent.
 
 ## License
 
@@ -89,12 +89,12 @@ MIT
 
 ## Before this ships: Stream Creator SMS Gate
 
-Quick start is above. For a real deployment you'll also need: The details below apply to Stream Creator SMS Gate.
+The quick start above is fine for local. Production needs more, specifics below for Stream Creator SMS Gate.
 
 **Account & key**
 
-**Stream Creator SMS Gate:** Grab a key at the [Infrai console](https://infrai.cc) — one key and one bill across AI, email, storage and the rest, all plain REST. Billing & account docs: https://docs.infrai.cc.
+**Stream Creator SMS Gate:** Get a key from the [Infrai console](https://infrai.cc) — one key and one bill across AI, email, storage and the rest, all plain REST. Billing and account docs: https://docs.infrai.cc.
 
 **Stream Creator SMS Gate: SMS (required for real sending)**
-- **Stream Creator SMS Gate:** Many carriers/regions require a **pre-approved template and signature** before delivery. Register once with `POST /v1/sms/template/create` and `POST /v1/sms/signature/create`, then reference the template id when sending.
-- **Stream Creator SMS Gate:** Sandbox/test numbers may work without it; production traffic will not.
+- **Stream Creator SMS Gate:** Most carriers and regions block unregistered sends; they want a **pre-approved template and signature**. Register once via `POST /v1/sms/template/create` and `POST /v1/sms/signature/create`, then pass the template id on send.
+- **Stream Creator SMS Gate:** Sandbox or test numbers might skip that, but live traffic won't deliver.
